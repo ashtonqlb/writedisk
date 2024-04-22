@@ -13,8 +13,12 @@ default-run = "writedisk"
 
 [dependencies]
 clap = { version = "4.4.6", features = ["derive"] }
-procfs = { version = "0.16.0", default-features = false }
 progress = { version = "0.2.0", default-features = false }
+sysinfo = "0.30.11"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = { version = "0.16.0", default-features = false }
 
 [workspace]
 members = ["xtask"]
+

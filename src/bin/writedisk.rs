@@ -2,95 +2,62 @@
 
 use clap::Parser;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::{env, fs, process};
+use std::path::PathBuf;
+use std::{env, process};
+use sysinfo::{Disks, System};
+
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const RUN_ELEVATED : &str = "sudo";
+#[cfg(target_os = "windows")]
+const RUN_ELEVATED : &str = "runas /user:Administrator";
 
 #[derive(Clone, Debug)]
 struct UsbBlockDevice {
-    /// The device path, e.g. "/dev/sdc"
-    device: PathBuf,
-
-    manufacturer: String,
-    product: String,
-    serial: String,
-}
-
-/// Try to determine whether this is a USB device or not by searching
-/// upwards for a directory name starting with "usb".
-fn is_usb_in_path(path: &Path) -> bool {
-    for path in path.ancestors() {
-        if let Some(name) = path.file_name() {
-            if let Some(name) = name.to_str() {
-                if name.starts_with("usb") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Search upwards for a directory containing device info
-/// (manufacturer, product, and serial).
-fn find_usb_info(path: &Path) -> Option<PathBuf> {
-    for path in path.ancestors() {
-        if path.join("manufacturer").exists()
-            && path.join("product").exists()
-            && path.join("serial").exists()
-        {
-            return Some(path.into());
-        }
-    }
-    None
+    mount_point: PathBuf,
+    description: String,
+    size: u64,
 }
 
 impl UsbBlockDevice {
     fn get_all() -> io::Result<Vec<UsbBlockDevice>> {
         let mut result = Vec::new();
-        for entry in fs::read_dir("/sys/block")? {
-            let entry = entry?;
-            let path = entry.path();
-            let device_path = path.join("device");
-            if !device_path.exists() {
-                continue;
-            }
+        let mut sys = System::new_all();
+        sys.refresh_all();
 
-            // This will give a very long path such as:
-            // /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/
-            //     0000:03:08.0/0000:08:00.3/usb4/4-3/4-3.2/4-3.2:1.0/
-            //     host7/target7:0:0/7:0:0:0
-            let device_path = device_path.canonicalize()?;
+        let disks = Disks::new_with_refreshed_list();
 
-            // Skip non-USB devices
-            if !is_usb_in_path(&device_path) {
-                continue;
-            }
-
-            if let Some(info_path) = find_usb_info(&device_path) {
-                let read = |name| -> io::Result<String> {
-                    let path = info_path.join(name);
-                    let contents = fs::read_to_string(path)?;
-                    Ok(contents.trim().into())
-                };
-
+        //Get all (removable) disks and saves their mount points, along with a name and a size;
+        for entry in &disks {
+            // Skip non-removable devices
+            if entry.is_removable() {
                 result.push(UsbBlockDevice {
-                    device: Path::new("/dev").join(entry.file_name()),
-                    manufacturer: read("manufacturer")?,
-                    product: read("product")?,
-                    serial: read("serial")?,
+                    mount_point: entry.mount_point().to_path_buf(),
+                    description: entry.name().to_string_lossy().into_owned(),
+                    size: entry.total_space(),
                 });
             }
         }
+        
         Ok(result)
+    }
+
+    // It's ugly but it works.
+    fn size_display(&self) -> String {
+        let size = self.size;
+        if size < 1_000_000_000 {
+            format!("{} MB", size / 1_000_000)
+        } else {
+            format!("{} GB", size / 1_000_000_000)
+        }
     }
 
     fn summary(&self) -> String {
         format!(
-            "[{}] {} {} {}",
-            self.device.display(),
-            &self.manufacturer,
-            &self.product,
-            &self.serial,
+            "[{}] {} {}",
+            self.mount_point.display(),
+            self.description,
+            self.size_display(),
         )
     }
 }
@@ -156,10 +123,10 @@ fn main() {
         "sudo {} {} {}",
         copier_path.display(),
         opt.input.display(),
-        device.device.display()
+        device.mount_point.display()
     );
-    let status = process::Command::new("sudo")
-        .args([&copier_path, &opt.input, &device.device])
+    let status = process::Command::new(RUN_ELEVATED)
+        .args([&copier_path, &opt.input, &device.mount_point])
         .status()
         .expect("failed to run command");
     if !status.success() {

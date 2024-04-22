@@ -1,13 +1,15 @@
 #![warn(clippy::pedantic)]
 
 use clap::Parser;
-use procfs::Current;
+// use procfs::Current;
 use std::convert::TryInto;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{fs, thread};
+#[cfg(target_os = "linux")]
+use procfs::Current;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -17,10 +19,14 @@ struct Opt {
 
 /// Get OS dirty byte count using [`procfs::Meminfo`].
 fn get_dirty_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
     match procfs::Meminfo::current() {
         Ok(o) => o.dirty,
         Err(_e) => 0,
     }
+
+    #[cfg(not(target_os = "linux"))] // Dummy value for non-linux platforms. Progress bar will not be displayed.
+    0
 }
 
 struct DirtyInfo {
@@ -110,7 +116,11 @@ fn main() {
     let mut src = fs::File::open(opt.src).unwrap();
     let src_size = src.metadata().unwrap().len();
 
-    let mut dst = fs::OpenOptions::new().write(true).open(&opt.dst).unwrap();
+    //TODO: Open as directory instead of file
+    let mut dst = fs::OpenOptions::new()
+        .write(true)
+        .open(&opt.dst)
+        .unwrap();
 
     let mut remaining = src_size;
     let mut bytes_written: u64 = 0;
