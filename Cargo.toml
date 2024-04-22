@@ -21,4 +21,3 @@ procfs = { version = "0.16.0", default-features = false }
 
 [workspace]
 members = ["xtask"]
-

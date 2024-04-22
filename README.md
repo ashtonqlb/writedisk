@@ -1,15 +1,13 @@
 # writedisk
 
-Small utility for writing a disk image to a USB drive.
+Small, cross-platform utility for writing a disk image to a USB drive.
 
-Usage: `writedisk <input>`
+**Usage: `writedisk <path/to/file>`**
 
-This will scan for connected USB disks and prompt for you to select
+This will scan for connected removable drives and prompt you to select
 one. Then the input file will be copied to the drive. The copying
-operation is done with a small `wd_copier` binary that is
-automatically invoked with `sudo`.
-
-Linux only for now.
+operation is done with a `wd_copier` process that is
+automatically invoked with elevated permissions.
 
 ## Installation
 
@@ -19,7 +17,7 @@ Linux only for now.
 cargo install writedisk
 ```
 
-### Nix/NixOS
+### Nix
 
 Per user:
 
@@ -33,6 +31,6 @@ System-wide:
 environment.systemPackages = with pkgs; [ writedisk ];
 ```
 
-## License
 
-Apache 2.0
+---
+This software is available under the [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0.html) license

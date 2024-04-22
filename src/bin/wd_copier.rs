@@ -1,15 +1,20 @@
 #![warn(clippy::pedantic)]
 
 use clap::Parser;
-// use procfs::Current;
 use std::convert::TryInto;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::time::Duration;
-use std::{fs, thread};
+use std::fs;
+
 #[cfg(target_os = "linux")]
 use procfs::Current;
+#[cfg(target_os = "linux")]
+use std::thread;
+#[cfg(target_os = "linux")]
+use std::sync::mpsc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -17,7 +22,7 @@ struct Opt {
     dst: PathBuf,
 }
 
-/// Get OS dirty byte count using [`procfs::Meminfo`].
+// Get OS dirty byte count using [`procfs::Meminfo`].
 fn get_dirty_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     match procfs::Meminfo::current() {
@@ -25,7 +30,7 @@ fn get_dirty_bytes() -> u64 {
         Err(_e) => 0,
     }
 
-    #[cfg(not(target_os = "linux"))] // Dummy value for non-linux platforms. Progress bar will not be displayed.
+    #[cfg(not(target_os = "linux"))] // Dummy value for non-linux platforms. Progress bar will not be displayed. Potentially re-implement later?
     0
 }
 
@@ -35,10 +40,30 @@ struct DirtyInfo {
     /// Dirty bytes after the copy.
     after_copy: u64,
     /// Current number of dirty bytes.
+    #[cfg(target_os = "linux")]   
     current: u64,
 }
 
 impl DirtyInfo {
+    /// Creates an empty DirtyInfo.
+    fn new() -> Self {
+        DirtyInfo {
+            before_copy: get_dirty_bytes(),
+            after_copy: 0,
+            #[cfg(target_os = "linux")]
+            current: 0,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_from(before_copy: u64, after_copy: u64, current: u64) -> Self {
+        DirtyInfo {
+            before_copy,
+            after_copy,
+            current,
+        }
+    }
+
     /// Estimate the percent completion (between 0 and 100) of the sync
     /// operation.
     ///
@@ -47,6 +72,7 @@ impl DirtyInfo {
     /// sync has completed. After the copy completes, the `current`
     /// value will be the same as `after_copy`, and it should decrease
     /// as the sync is underway until it reaches `before_copy`.
+    #[cfg(target_os = "linux")]
     fn calc_sync_percent(&self) -> i32 {
         let current = self.current.saturating_sub(self.before_copy);
         let max = self.after_copy.saturating_sub(self.before_copy);
@@ -55,6 +81,7 @@ impl DirtyInfo {
         // closer to completion.
         100 - calc_percent(current, max)
     }
+    
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -79,8 +106,10 @@ fn calc_percent(current: u64, max: u64) -> i32 {
 /// `/proc/meminfo`. This isn't an exact science and is just a rough estimate
 /// of our completion.
 ///
-/// Meant to be run on a thread parallel to the actual sync process and exits
+/// Meant to be run on a thread parallel to the actual sync process 
+/// and exits
 /// after receiving a signal from main that the sync is complete.
+#[cfg(target_os = "linux")]
 fn sync_progress_bar(
     rx: &mpsc::Receiver<()>,
     mut progress_bar: progress::Bar,
@@ -104,28 +133,20 @@ fn sync_progress_bar(
 fn main() {
     let opt = Opt::parse();
 
-    let mut dirty = DirtyInfo {
-        before_copy: get_dirty_bytes(),
-        after_copy: 0,
-        current: 0,
-    };
+    let mut dirty = DirtyInfo::new();
 
     let mut progress_bar = progress::Bar::new();
     progress_bar.set_job_title("copying... (1/2)");
 
     let mut src = fs::File::open(opt.src).unwrap();
     let src_size = src.metadata().unwrap().len();
-
-    //TODO: Open as directory instead of file
-    let mut dst = fs::OpenOptions::new()
-        .write(true)
-        .open(&opt.dst)
-        .unwrap();
+    let mut dst = File::create(opt.dst).unwrap();
 
     let mut remaining = src_size;
     let mut bytes_written: u64 = 0;
     let chunk_size: u64 = 1024 * 1024; // TODO
     let mut buf = Vec::new();
+    
     while remaining > 0 {
         let percent = calc_percent(bytes_written, src_size);
         progress_bar.reach_percent(percent);
@@ -144,10 +165,12 @@ fn main() {
         bytes_written += read_size;
     }
 
+    #[cfg(target_os = "linux")]
     let (tx, rx) = mpsc::channel();
     dirty.after_copy = get_dirty_bytes() - dirty.before_copy;
 
     // If we can't get dirty bytes info we can just print 'syncing...' to the screen
+    #[cfg(target_os = "linux")]
     if dirty.after_copy == 0 {
         println!("syncing... (2/2)");
     } else {
@@ -156,7 +179,10 @@ fn main() {
         });
     }
 
+    println!("syncing... (2/2)");
+
     dst.sync_data().unwrap();
+    #[cfg(target_os = "linux")]
     tx.send(()).unwrap();
 
     println!("finished");
@@ -179,13 +205,11 @@ mod tests {
         assert_eq!(calc_percent(100, 0), 0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_dirty_calc_percent() {
-        let mut dirty = DirtyInfo {
-            before_copy: 100,
-            after_copy: 120,
-            current: 120,
-        };
+        let mut dirty = DirtyInfo::new_from(100, 120, 120);
+
         assert_eq!(dirty.calc_sync_percent(), 0);
 
         dirty.current = 105;

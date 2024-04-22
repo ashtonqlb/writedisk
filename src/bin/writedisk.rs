@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, process};
 use sysinfo::{Disks, System};
 
@@ -14,6 +14,9 @@ const RUN_ELEVATED : &str = "runas /user:Administrator";
 
 #[derive(Clone, Debug)]
 struct UsbBlockDevice {
+    #[cfg(target_os = "windows")]
+    friendly_name: PathBuf, // Windows only
+
     mount_point: PathBuf,
     description: String,
     size: u64,
@@ -32,7 +35,11 @@ impl UsbBlockDevice {
             // Skip non-removable devices
             if entry.is_removable() {
                 result.push(UsbBlockDevice {
+                    #[cfg(not(target_os = "windows"))]
                     mount_point: entry.mount_point().to_path_buf(),
+                    #[cfg(target_os = "windows")]
+                    friendly_name: entry.mount_point().to_path_buf(),
+                    mount_point: UsbBlockDevice::determine_windows_phydrive(entry.mount_point().to_str().unwrap()),
                     description: entry.name().to_string_lossy().into_owned(),
                     size: entry.total_space(),
                 });
@@ -52,10 +59,49 @@ impl UsbBlockDevice {
         }
     }
 
+    fn determine_windows_phydrive(mount_point: &str) -> PathBuf {
+        use std::process::Command;
+        use std::str;
+        
+        let output = Command::new("powershell")
+            .arg("-Command")
+            .arg(r#"
+            Get-Disk | ForEach-Object {
+                $diskNumber = $_.Number
+                $mountPoints = (Get-Partition -DiskNumber $diskNumber | Get-Volume).DriveLetter -join ''
+                "$mountPoints, $diskNumber"
+            }
+            "#)
+            .output()
+            .expect("failed to execute process");
+    
+        let output_str = str::from_utf8(&output.stdout).unwrap();
+        let mount_point_first_char = mount_point.chars().next().unwrap();
+    
+        match output_str.lines().find(|line| line.starts_with(mount_point_first_char)) {
+            Some(line) => {
+                let disk_number = line.split(", ").last().unwrap();
+                Path::new(&format!("\\\\.\\PhysicalDrive{}", disk_number)).to_path_buf()
+            }
+            None => {
+                println!("failed to determine physical drive for {}", mount_point);
+                process::exit(1);
+            }
+        }
+    }
+
     fn summary(&self) -> String {
+        #[cfg(not(target_os = "windows"))]
         format!(
             "[{}] {} {}",
             self.mount_point.display(),
+            self.description,
+            self.size_display(),
+        );
+        #[cfg(target_os = "windows")]
+        format!(
+            "[{}] {} {}",
+            self.friendly_name.display(),
             self.description,
             self.size_display(),
         )
@@ -119,12 +165,16 @@ fn main() {
         .expect("failed to get current exe directory")
         .join("wd_copier");
 
-    println!(
-        "sudo {} {} {}",
-        copier_path.display(),
-        opt.input.display(),
-        device.mount_point.display()
-    );
+    #[cfg(debug_assertions)] {
+        println!(
+            "{} {} {} {}",
+            RUN_ELEVATED,
+            copier_path.display(),
+            opt.input.display(),
+            device.mount_point.display()
+        );
+    }
+
     let status = process::Command::new(RUN_ELEVATED)
         .args([&copier_path, &opt.input, &device.mount_point])
         .status()
